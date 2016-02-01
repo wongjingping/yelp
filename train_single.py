@@ -23,6 +23,16 @@ from keras.regularizers import l2
 def to_bool(s):
     return(pd.Series([1L if str(i) in str(s).split(' ') else 0L for i in range(9)]))
 
+# take average prediction of binary matrix and convert into a string of numeric labels
+def from_bool(x):
+    x = np.where(x.mean(axis=0).round())[0]
+    return(' '.join(str(i) for i in x))
+
+# sample up to 10 pictures from each business_id
+def take(series,n=10):
+    n = min(n,len(series))
+    return(series.sample(n,random_state=290615))
+
 
 # image generator + augmentor
 def image_generator(i_min,i_max,batch_size,augment=True):
@@ -125,6 +135,7 @@ def train():
     model_json = model.to_json()
     open('models/%s.json' % (mname), 'w').write(model_json)
     model.save_weights('models/%s_weights.h5' % (mname))
+    return(loss_test)
 
 
 if __name__ == '__main__':
@@ -137,11 +148,35 @@ if __name__ == '__main__':
     h,w,ch,batch_size = 128,128,3,32
     nrow,ncol,ny = len(XY),h*w*ch,9
 
-    train()
+    loss_test = train()
     
     # predict
-    model = model_from_json(open('models/model_062.json').read())
-    model.load_weights('models/model_062_weights.h5')
-
-
+    model = model_from_json(open('models/model_%03d.json' % (loss_test*100)).read())
+    model.load_weights('models/model_%03d_weights.h5' % (loss_test*100))
+    biz_id_test = pd.read_csv('data/test_photo_to_biz.csv')
+    submit = pd.read_csv('data/sample_submission.csv')
+    
+    # take average of up to 10 photos for each biz_id
+    test_id = biz_id_test.groupby('business_id').apply(take)
+    XY_test = pd.merge(test_id,submit,on='business_id')
+    data = h5py.File('data/test_matrix.h5','w')
+    X_test = data.create_dataset(
+        name='X',
+        shape=(len(XY_test),h,w,ch),
+        dtype=np.float32)
+    for i in range(len(XY_test)):
+        f_ = 'data/test_photos/%s.jpg' % (XY_test['photo_id'][i])
+        im_sml = Image.open(f_).resize((w,h))
+        X_test[i,:,:,:] = np.asarray(im_sml)/128.-1
+        if i % 1000 == 0:
+            print('reading %ith image' % i)
+    Y_pred = pd.DataFrame(model.predict(X_test,batch_size=128))
+    data.close()
+    Y_pred['business_id'] = XY_test['business_id']
+    labels = pd.DataFrame(Y_pred.groupby('business_id').apply(from_bool)) # 46mins
+    labels['business_id'],labels['labels'] = labels.index,labels[0]
+    submit_labels = pd.merge(submit[['business_id']],labels[['business_id','labels']])
+    submit_labels.to_csv('data/sub2_singleconv.csv',index=False)
+    # mostly 1 2 5 6 8. F1 score of 0.59959
+    
     
