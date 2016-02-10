@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 from keras.models import Sequential, model_from_json
 from keras.layers.core import Permute, Dense, Flatten, Dropout
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
-from keras.regularizers import l2
 
 
 # convert numeric labels to binary matrix
@@ -64,7 +63,7 @@ def image_generator(i_min,i_max,batch_size,augment=True):
                     xi = cv2.warpPerspective(xi,M,(w,h))
             # save back to X_batch
             X_batch[i_-b*batch_size,:,:,:] = xi
-        yield(X_batch,Y_batch)
+        yield([X_batch],Y_batch)
         if bi < len(b_list)-1:
             bi += 1
         else:
@@ -98,11 +97,9 @@ def train():
                             subsample=(1,1)))
     model.add(MaxPooling2D(pool_size=(2,2)))
     model.add(Flatten())
-    model.add(Dense(output_dim=1000,init='glorot_uniform',activation='relu',
-                    W_regularizer=l2(0.001)))
+    model.add(Dense(output_dim=500,init='glorot_uniform',activation='relu'))
     model.add(Dropout(0.5))
-    model.add(Dense(output_dim=1000,init='glorot_uniform',activation='relu',
-                    W_regularizer=l2(0.001)))
+    model.add(Dense(output_dim=500,init='glorot_uniform',activation='relu'))
     model.add(Dropout(0.5))
     model.add(Dense(output_dim=9,init='glorot_uniform',activation='sigmoid'))
 
@@ -138,6 +135,24 @@ def train():
     return(loss_test)
 
 
+# store test images as a matrix for making predictions
+def store_test():
+    data = h5py.File('data/test_matrix.h5','w')
+    X_test = data.create_dataset(
+        name='X',
+        shape=(len(XY_test),h,w,ch),
+        dtype=np.float32)
+    for i in range(len(XY_test)):
+        f_ = 'data/test_photos/%s.jpg' % (XY_test['photo_id'][i])
+        im_sml = Image.open(f_).resize((w,h))
+        X_test[i,:,:,:] = np.asarray(im_sml)/128.-1
+        if i % 1000 == 0:
+            print('reading %ith image' % i)
+    data.close()
+
+
+
+
 if __name__ == '__main__':
 
     # prep data to be read
@@ -159,24 +174,16 @@ if __name__ == '__main__':
     # take average of up to 10 photos for each biz_id
     test_id = biz_id_test.groupby('business_id').apply(take)
     XY_test = pd.merge(test_id,submit,on='business_id')
-    data = h5py.File('data/test_matrix.h5','w')
-    X_test = data.create_dataset(
-        name='X',
-        shape=(len(XY_test),h,w,ch),
-        dtype=np.float32)
-    for i in range(len(XY_test)):
-        f_ = 'data/test_photos/%s.jpg' % (XY_test['photo_id'][i])
-        im_sml = Image.open(f_).resize((w,h))
-        X_test[i,:,:,:] = np.asarray(im_sml)/128.-1
-        if i % 1000 == 0:
-            print('reading %ith image' % i)
-    Y_pred = pd.DataFrame(model.predict(X_test,batch_size=128))
+    # store_test()
+    data = h5py.File('data/test_matrix.h5','r')
+    X_test = data['X']
+    Y_pred = pd.DataFrame(model.predict(X_test,batch_size=128)) # 46mins
     data.close()
     Y_pred['business_id'] = XY_test['business_id']
-    labels = pd.DataFrame(Y_pred.groupby('business_id').apply(from_bool)) # 46mins
+    labels = pd.DataFrame(Y_pred.groupby('business_id').apply(from_bool))
     labels['business_id'],labels['labels'] = labels.index,labels[0]
     submit_labels = pd.merge(submit[['business_id']],labels[['business_id','labels']])
     submit_labels.to_csv('data/sub2_singleconv.csv',index=False)
-    # mostly 1 2 5 6 8. F1 score of 0.59959
+    # mostly 1 2 5 6 8. F1 score of ~0.61
     
     
