@@ -109,12 +109,8 @@ def image_generator(df,batch_size,plab,augment=True):
 
 
 
-
-def obj_agg(Y_true,Y_pred):
-    """
-    Calculates the binary cross entropy on the aggregated outputs of each 
-    batch. Use the max when y_true == 1 but the mean when y_true== 0
-    """
+# mix of max and mean
+def obj_mix(Y_true,Y_pred):
     y_true = K.mean(Y_true,axis=0)
     if y_true == 1:
         y_pred = K.max(Y_pred,axis=0)
@@ -124,6 +120,18 @@ def obj_agg(Y_true,Y_pred):
     else:
         print('unexpected value of y_true',y_true)
         return(K.mean(K.binary_crossentropy(Y_pred,Y_true)))
+
+# sum of output probabilities
+def obj_sum(Y_true,Y_pred):
+    y_true = K.mean(Y_true,axis=0)
+    y_pred = K.sum(Y_pred,axis=0)
+    return(K.mean(K.binary_crossentropy(y_pred,y_true)))
+
+# max of output probabilities
+def obj_max(Y_true,Y_pred):
+    y_true = K.mean(Y_true,axis=0)
+    y_pred = K.sum(Y_pred,axis=0)
+    return(K.mean(K.binary_crossentropy(y_pred,y_true)))
 
 
 def test(model,gen,n_id,threshold=0.5,verbose=True):
@@ -209,10 +217,10 @@ def train_model(lab):
     model.add(Dropout(0.5))
     model.add(Dense(output_dim=500,init='glorot_uniform',activation='relu'))
     model.add(Dropout(0.5))
-    model.add(Dense(output_dim=1,init='glorot_uniform',activation='sigmoid'))
+    model.add(Dense(output_dim=1,init='zero',activation='sigmoid'))
 
-    sgd = SGD(lr=0.1, decay=1e-6, momentum=0.9, nesterov=True)
-    model.compile(optimizer=sgd, loss=obj_agg, 
+    sgd = SGD(lr=0.1, decay=1e-6, momentum=0., nesterov=True)
+    model.compile(optimizer=sgd, loss=obj_mix, 
                   class_mode='binary')
     t_train = time()
     print('Took %.1fs' % (t_train-t_comp))
@@ -261,7 +269,7 @@ def show_classified_pics(gen,model):
     plt.rcParams['figure.figsize'] = (14,14)
     xis = np.where(y_pred > 0.5)
     fig1 = plt.figure()
-    fig1.suptitle('Outdoor photos',fontsize=24)
+    fig1.suptitle('Label 1',fontsize=24)
     for i in range(len(xis[0])):
         axi = fig1.add_subplot(6,6,i+1)
         i_ = xis[0][i]
@@ -270,7 +278,7 @@ def show_classified_pics(gen,model):
         axi.set_title('%.3f' % y_pred[i_])
     xis = np.where(y_pred < 0.5)
     fig2 = plt.figure()
-    fig2.suptitle('Non-outdoor photos',fontsize=24)
+    fig2.suptitle('Label 0',fontsize=24)
     for i in range(len(xis[0])):
         axi = fig2.add_subplot(6,6,i+1)
         i_ = xis[0][i]

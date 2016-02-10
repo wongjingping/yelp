@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from keras.models import Sequential, model_from_json
 from keras.layers.core import Permute, Dense, Flatten, Dropout
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
+from keras.callbacks import Callback
 
 
 # convert numeric labels to binary matrix
@@ -70,6 +71,59 @@ def image_generator(i_min,i_max,batch_size,augment=True):
             bi,b_list = 0,rng.permutation(range(i_min/batch_size,i_max/batch_size))
 
 
+
+def test(model,gen,n_id,threshold=0.5,verbose=True):
+    """
+    Evaluate on test set
+    
+    Parameters
+    ----------
+    model: keras model
+        Model
+    gen: generator
+        Generates a batch of images for a business_id in each batch
+    n_id: int
+        number of business_ids in test set
+    """
+    t_start = time()
+    ce_avg,tp,tn,fp,fn = 0.,0.,0.,0.,0.
+    for i in range(n_id):
+        X_test,y_test = gen.next()
+        y_test = y_test.mean()
+        Y_pred = model.predict(X_test)
+        y_pred = Y_pred.max(axis=0)
+        ce = np.mean(- y_test * np.log(y_pred) - (1-y_test) * np.log(1-y_pred))
+        ce_avg += ce/n_id
+        y_predr = y_pred.round()
+        tp += sum((y_test == 1) & (y_predr == 1))
+        tn += sum((y_test == 0) & (y_predr == 0))
+        fp += sum((y_test == 0) & (y_predr == 1))
+        fn += sum((y_test == 1) & (y_predr == 0))
+    prec,recall,acc = tp/(tp+fp+1e-15),tp/(tp+fn+1e-15),(tp+tn)/n_id
+    F1 = 2*tp/(2*tp+fp+fn)
+    if verbose:
+        print('Valid F1 %.3f tp %.3f tn %.3f fp %.3f fn %.3f' % (F1,tp,tn,fp,fn))
+        print('Took %.1fs' % (time()-t_start))
+    return(ce_avg,prec,recall,F1,acc,tp,tn,fp,fn)
+
+
+# callback that loops over validation set generator
+class Validator(Callback):
+    def __init__(self, valid_gen, n_id, print_every_n=np.inf):
+        self.gen = valid_gen
+        self.n_id = n_id
+        self.print_every_n = print_every_n
+    def on_batch_end(self, epoch, logs={}):
+        if epoch % self.print_every_n == 0:
+            print('batch: %i acc: %.3f loss: %.3f size: %i' % \
+        (logs['batch'],logs['acc'],logs['loss'],logs['size']))
+    def on_epoch_end(self, epoch, logs={}):
+        ce,prec,recall,F1,acc,tp,tn,fp,fn = test(model,self.gen,self.n_id)
+        self.logs[epoch] = {'ce':ce,'prec':prec,'recall':recall,'F1':F1,
+            'acc':acc,'tp':tp,'tn':tn,'fp':fp,'fn':fn}
+
+
+
 # train model
 def train():
     print('Compiling Model')
@@ -113,19 +167,20 @@ def train():
     train_p,valid_p = 0.8,0.1
     i_train = int(nrow*train_p)/batch_size*batch_size
     i_valid = int(nrow*(train_p+valid_p))/batch_size*batch_size
-    train_gen = image_generator(i_min=0,i_max=i_train,batch_size=batch_size,augment=True)
-    valid_gen = image_generator(i_min=i_train,i_max=i_valid,batch_size=i_valid-i_train,augment=False)
-    test_gen = image_generator(i_min=i_valid,i_max=nrow,batch_size=nrow-i_valid,augment=False)
+    train_gen = image_generator(0,i_train,batch_size,augment=True)
+    valid_gen = image_generator(i_train,i_valid,batch_size,augment=False)
+    test_gen = image_generator(i_valid,nrow,batch_size,augment=False)
+    validator = Validator(valid_gen,i_valid-i_train,1)
     hist_gen = model.fit_generator(train_gen, 
                                    samples_per_epoch=i_train,
                                    nb_epoch=10,
                                    verbose=2,
                                    show_accuracy=True,
-                                   validation_data=valid_gen.next())
+                                   callbacks=[validator])
     print(hist_gen)
     # evaluate on test set
-    X_test,Y_test = test_gen.next()
-    loss_test = model.evaluate(X_test,Y_test)
+    ce,prec,recall,F1,acc,tp,tn,fp,fn = test(model,test_gen,nrow-i_valid)
+
     
     # save model
     mname = 'model_%03d' % (loss_test*100)
@@ -133,6 +188,37 @@ def train():
     open('models/%s.json' % (mname), 'w').write(model_json)
     model.save_weights('models/%s_weights.h5' % (mname))
     return(loss_test)
+
+
+
+# visualize selected/flagged examples on random data
+# TODO adapt to multi-label at once
+def show_classified_pics(gen,model):
+    X_batch,y_batch = gen.next()
+    y_pred = model.predict(X_batch[0])
+    y_predr = np.max(y_pred.round())
+    plt.rcParams['figure.figsize'] = (14,14)
+    xis = np.where(y_pred > 0.5)
+    fig1 = plt.figure()
+    fig1.suptitle('Label 1',fontsize=24)
+    for i in range(len(xis[0])):
+        axi = fig1.add_subplot(6,6,i+1)
+        i_ = xis[0][i]
+        axi.imshow((X_batch[0][i_,...]+1)/2)
+        axi.axis('off')
+        axi.set_title('%.3f' % y_pred[i_])
+    xis = np.where(y_pred < 0.5)
+    fig2 = plt.figure()
+    fig2.suptitle('Label 0',fontsize=24)
+    for i in range(len(xis[0])):
+        axi = fig2.add_subplot(6,6,i+1)
+        i_ = xis[0][i]
+        axi.imshow((X_batch[0][i_,...]+1)/2)
+        axi.axis('off')
+        axi.set_title('%.3f' % y_pred[i_])
+    print('Truth %i \nPredicted %i' % (y_batch[0],y_predr))
+    return(X_batch,y_batch)
+
 
 
 # store test images as a matrix for making predictions
