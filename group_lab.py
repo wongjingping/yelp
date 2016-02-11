@@ -111,6 +111,10 @@ def image_generator(df,batch_size,plab,augment=True):
 
 # mix of max and mean
 def obj_mix(Y_true,Y_pred):
+    """
+    Calculates the binary cross entropy on the aggregated outputs of each 
+    batch. Use the max when y_true == 1 but the mean when y_true== 0
+    """
     y_true = K.mean(Y_true,axis=0)
     if y_true == 1:
         y_pred = K.max(Y_pred,axis=0)
@@ -130,11 +134,11 @@ def obj_sum(Y_true,Y_pred):
 # max of output probabilities
 def obj_max(Y_true,Y_pred):
     y_true = K.mean(Y_true,axis=0)
-    y_pred = K.sum(Y_pred,axis=0)
+    y_pred = K.max(Y_pred,axis=0)
     return(K.mean(K.binary_crossentropy(y_pred,y_true)))
 
 
-def test(model,gen,n_id,threshold=0.5,verbose=True):
+def test(model,gen,n_id,threshold=0.5,verbose=True,print_every_n=10):
     """
     Evaluate on test set
     
@@ -161,6 +165,8 @@ def test(model,gen,n_id,threshold=0.5,verbose=True):
         tn += sum((y_test == 0) & (y_predr == 0))
         fp += sum((y_test == 0) & (y_predr == 1))
         fn += sum((y_test == 1) & (y_predr == 0))
+        if i % print_every_n == 0:
+            print(i)
     prec,recall,acc = tp/(tp+fp+1e-15),tp/(tp+fn+1e-15),(tp+tn)/n_id
     F1 = 2*tp/(2*tp+fp+fn)
     if verbose:
@@ -240,7 +246,7 @@ def train_model(lab):
     train_gen = image_generator(df_train,batch_size,plab=plab)
     valid_gen = image_generator(df_valid,np.inf,plab=1.)
     test_gen = image_generator(df_test,np.inf,plab=1.,augment=False)
-    validator = Validator(valid_gen,len(df_valid),10)
+    validator = Validator(valid_gen,len(i_valid),100)
     model.fit_generator(train_gen,
                        samples_per_epoch=len(df_train),
                        nb_epoch=10,
@@ -266,12 +272,12 @@ def show_classified_pics(gen,model):
     X_batch,y_batch = gen.next()
     y_pred = model.predict(X_batch[0])
     y_predr = np.max(y_pred.round())
-    plt.rcParams['figure.figsize'] = (14,14)
+    plt.rcParams['figure.figsize'] = (15,20)
     xis = np.where(y_pred > 0.5)
     fig1 = plt.figure()
     fig1.suptitle('Label 1',fontsize=24)
     for i in range(len(xis[0])):
-        axi = fig1.add_subplot(6,6,i+1)
+        axi = fig1.add_subplot(12,6,i+1)
         i_ = xis[0][i]
         axi.imshow((X_batch[0][i_,...]+1)/2)
         axi.axis('off')
@@ -280,7 +286,7 @@ def show_classified_pics(gen,model):
     fig2 = plt.figure()
     fig2.suptitle('Label 0',fontsize=24)
     for i in range(len(xis[0])):
-        axi = fig2.add_subplot(6,6,i+1)
+        axi = fig2.add_subplot(12,6,i+1)
         i_ = xis[0][i]
         axi.imshow((X_batch[0][i_,...]+1)/2)
         axi.axis('off')
