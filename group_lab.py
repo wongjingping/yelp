@@ -296,6 +296,56 @@ def show_classified_pics(gen,model):
 
 
 
+# predict submit set probabilities for given label
+def predict_submit(lab,model,augment=1,print_every_n=10):
+    t_start = time()
+    rng = np.random.RandomState(290615)
+    df = pd.merge(biz_id_train,train[['business_id',lab]],on='business_id')
+    plab = df[lab].mean()
+    submit = pd.read_csv('data/sample_submission.csv')
+    submit[lab] = pd.Series()
+    biz_id_test = pd.read_csv('data/test_photo_to_biz.csv')
+    for i in submit.index:
+        biz_id_i = submit.ix[i]['business_id']
+        photo_l = biz_id_test[biz_id_test['business_id']==biz_id_i]['photo_id']
+        batch_size_i = len(photo_l)
+        y_pred = np.empty(augment)
+        t_i = time()
+        for a in range(augment):
+            X_batch = np.empty((batch_size_i,h,w,ch))
+            for i_ in range(batch_size_i):
+                f_ = 'data/test_photos/' + str(photo_l.iloc[i_]) + '.jpg'
+                im = Image.open(os.path.realpath(f_))
+                im_sml = im.resize((w,h))
+                # scale inputs [-1,+1]
+                xi = np.asarray(im_sml)/128.-1
+                if augment:
+                    # flip coords horizontally (but not vertically)
+                    if rng.rand(1)[0] > 0.5:
+                        xi = np.fliplr(xi)
+                    # rescale slightly within a random range
+                    jit = w*0.2
+                    if rng.rand(1)[0] > 0.1:
+                        xl,xr = rng.uniform(0,jit,1),rng.uniform(w-jit,w,1)
+                        yu,yd = rng.uniform(0,jit,1),rng.uniform(h-jit,h,1)
+                        pts1 = np.float32([[xl,yu],[xr,yu],[xl,yd],[xr,yd]])
+                        pts2 = np.float32([[0,0],[w,0],[0,h],[w,h]])
+                        M = cv2.getPerspectiveTransform(pts1,pts2)
+                        xi = cv2.warpPerspective(xi,M,(w,h))
+                # save individual image to X_batch
+                X_batch[i_,:,:,:] = xi
+            y_batch = model.predict_proba(X_batch,verbose=0)
+            y_pred[a] = y_batch.max()
+        y_predp = y_pred.mean()
+        submit.ix[(i,lab)] = y_predp
+        if i % print_every_n == 0:
+            print('%i biz id %s p %.3f took %.1fs' % (i, biz_id_i,y_predp,time()-t_i))
+            submit.to_csv('data/sub_%s.csv' % lab,index=False)
+    submit[lab] = ''
+    submit.loc[submit[lab] > submit[lab].quantile(plab),lab] = '%s ' % lab
+    print('%i images took %.0fs' % (i,time()-t_start))
+    return(submit)
+
 
 # helper function for visualizing change in label proportion by number of images
 def plot_proportion_by_num_img(lab):
@@ -317,14 +367,7 @@ if __name__ == '__main__':
     biz_id_train = pd.read_csv('data/train_photo_to_biz_ids.csv')
     train[['0','1','2','3','4','5','6','7','8']] = train['labels'].apply(to_bool)
     h,w,ch,batch_size = 128,128,3,32
-    
-    ### EDA
-    # bin the number of training images for each biz_id
- # 0.49 of biz_id are classified as having outdoor seating
 
-    # proportion of images in each bin labeled as outdoors doesn't depend 
-    # linearly with number of images provided
-    
     
     ### Training
     model0,F1 = train_model(lab='0')
