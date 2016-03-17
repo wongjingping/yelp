@@ -99,6 +99,7 @@ def test(model,gen,n_id,threshold=0.5,verbose=True):
         tn += sum((y_test == 0) & (y_predr == 0))
         fp += sum((y_test == 0) & (y_predr == 1))
         fn += sum((y_test == 1) & (y_predr == 0))
+        print(i)
     prec,recall,acc = tp/(tp+fp+1e-15),tp/(tp+fn+1e-15),(tp+tn)/n_id
     F1 = 2*tp/(2*tp+fp+fn)
     if verbose:
@@ -170,14 +171,13 @@ def train():
     train_gen = image_generator(0,i_train,batch_size,augment=True)
     valid_gen = image_generator(i_train,i_valid,batch_size,augment=False)
     test_gen = image_generator(i_valid,nrow,batch_size,augment=False)
-    validator = Validator(valid_gen,i_valid-i_train,1)
+    validator = Validator(valid_gen,i_valid-i_train,100)
     hist_gen = model.fit_generator(train_gen, 
                                    samples_per_epoch=i_train,
-                                   nb_epoch=10,
+                                   nb_epoch=100,
                                    verbose=2,
                                    show_accuracy=True,
                                    callbacks=[validator])
-    print(hist_gen)
     # evaluate on test set
     ce,prec,recall,F1,acc,tp,tn,fp,fn = test(model,test_gen,nrow-i_valid)
 
@@ -270,6 +270,6 @@ if __name__ == '__main__':
     labels['business_id'],labels['labels'] = labels.index,labels[0]
     submit_labels = pd.merge(submit[['business_id']],labels[['business_id','labels']])
     submit_labels.to_csv('data/sub2_singleconv.csv',index=False)
-    # mostly 1 2 5 6 8. F1 score of ~0.61
+    # mostly 1 2 5 6 8. F1 score of ~0.65
     
     
