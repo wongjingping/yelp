@@ -73,64 +73,71 @@ def VGG_16(weights_path=None):
 # build model
 model = VGG_16('models/vgg16_weights.h5')
 
-# read in images, normalize
-biz_lab = pd.read_csv('data/train.csv')
+# read in photo, biz, label for train and submit sets
 photo_biz = pd.read_csv('data/train_photo_to_biz_ids.csv')
+biz_lab = pd.read_csv('data/train.csv')
+submit_photo_biz = pd.read_csv('data/test_photo_to_biz.csv')
+submit_biz_lab = pd.read_csv('data/sample_submission.csv')
+
+# read in images, normalize, store in hdf5
+t_read = time()
 _,ch,h,w = model.input_shape
-train_h5 = h5py.File('data/train.h5','w')
-X_train = train_h5.create_dataset(
+_,nf = model.output_shape
+mean_pixels = np.array([123.68,116.779,103.939]).reshape((3,1,1))
+# store train set
+raw_h5 = h5py.File('data/raw_train.h5','w')
+X_train = raw_h5.create_dataset(
     name='X_train',
-    shape=(len(photo_biz),ch,h,w),
+    shape=(len(biz_lab),nf),
     dtype=np.float32)
-t = time()
-for i in range(len(photo_biz)):
-    f_ = 'data/train_photos/%s.jpg' % (photo_biz['photo_id'][i])
-    im_sml = Image.open(f_).resize((w,h))
-    # should use the specific means as used to normalize the data
-    X_train[i,:,:,:] = np.asarray(im_sml).transpose((2,0,1))/128.-1
-    if i % 1000 == 0:
-        print('reading %ith image' % i)
-train_h5.close()
-print('Reading training data into hdf5 took %.1f' % (time()-t))
+for i in range(len(biz_lab)):
+    biz_i = biz_lab['business_id'][i]
+    photo_l = photo_biz.ix[photo_biz['business_id']==biz_i,'photo_id']
+    raw_i = np.zeros((len(photo_l),ch,h,w))
+    for j in range(len(photo_l)):
+        f_ = 'data/train_photos/%s.jpg' % (photo_biz['photo_id'][j])
+        im_j = Image.open(f_).resize((w,h))
+        ima_j = np.asarray(im_j).transpose((2,0,1))
+        raw_i[j,:,:,:] = ima_j - mean_pixels
+    X_train[i,:] = np.mean(model.predict(raw_i,batch_size=32),axis=0)
+    if i % 10 == 0:
+        print('reading %ith biz took %ds' % (i,time()-t_read))
+print('Reading training data into hdf5 took %.1f' % (time()-t_read))
+raw_h5.close()
+# store submit set
+raw_h5 = h5py.File('data/raw_submit.h5','w')
+X_submit = raw_h5.create_dataset(
+    name='X_submit',
+    shape=(len(submit_biz_lab),nf),
+    dtype=np.float32)
+for i in range(len(submit_biz_lab)):
+    biz_i = submit_biz_lab['business_id'][i]
+    photo_l = submit_photo_biz.ix[submit_photo_biz['business_id']==biz_i,'photo_id']
+    raw_i = np.zeros((len(photo_l),ch,h,w))
+    for j in range(len(photo_l)):
+        f_ = 'data/test_photos/%s.jpg' % (submit_photo_biz['photo_id'][j])
+        im_j = Image.open(f_).resize((w,h))
+        ima_j = np.asarray(im_j).transpose((2,0,1))
+        raw_i[j,:,:,:] = ima_j - mean_pixels
+    X_submit[i,:] = np.mean(model.predict(raw_i),axis=0)
+    if i % 100 == 0:
+        print('reading %ith biz took %ds' % (i,time()-t_read))
+print('Reading submiting data into hdf5 took %.1f' % (time()-t_read))
+raw_h5.close()
+
+def to_bool(x):
+    return(pd.Series([1L if str(i) in str(x).split(' ') else 0L for i in range(9)]))
+
+raw_h5 = h5py.File('data/raw_train.h5','r')
+X = raw_h5['X_train'][...]
+raw_h5.close()
+y = biz_lab['labels'].apply(to_bool)
+raw_h5 = h5py.File('data/raw_submit.h5','r')
+X_submit = raw_h5['X_submit'][...]
+raw_h5.close()
 
 
-# calculate features on train set
-t = time()
-train_h5 = h5py.File('data/train.h5','r')
-features_h5 = h5py.File('data/features.h5','w')
-X_train = train_h5['X']
-nrow,nf = len(photo_biz),model.output_shape[1]
-X_feat = features_h5.create_dataset(name='features',
-    shape=(nrow,nf),dtype=np.float32)
-X_feat[...] = model.predict(X_train) # 114 mins
-train_h5.close()
-features_h5.close()
-print('calculating features took %.1f' % (time()-t))
-
-# average over (up to) batch_size sampled photos for each biz
-nbiz, batch_size, nclass = len(biz_lab), 64, 9
-rng = np.random.RandomState(290615)
-features_h5 = h5py.File('data/features.h5','r')
-features_all = features_h5['features']
-X_agg = np.zeros((nbiz,nf))
-y_agg = np.zeros((nbiz,nclass))
-for i in biz_lab.index:
-    biz_i,lab_i = biz_lab.ix[i,['business_id','labels']]
-    photo_idx = photo_biz.index[photo_biz['business_id']==biz_i]
-    if len(photo_idx) > batch_size:
-        photo_s = rng.choice(photo_idx, size=batch_size, replace=False)
-        photo_s.sort()
-    else:
-        photo_s = photo_idx
-    X_agg[i,:] = np.mean(features_all[photo_s,:],axis=0)
-    if type(lab_i) == str:
-        y_agg[i,:] = np.asarray(\
-            [1L if str(l) in lab_i.split(' ') else 0L for l in range(9)])
-    else:
-        y_agg[i,:] = np.zeros(9)
-features_h5.close()
-
-# train svm on 80% data
+# train svm
 from sklearn.preprocessing import StandardScaler
 from sklearn import svm
 from sklearn.cross_validation import train_test_split
@@ -138,51 +145,24 @@ from sklearn.multiclass import OneVsRestClassifier
 from sklearn.metrics import f1_score
 
 scaler = StandardScaler()
-X_sc = scaler.fit_transform(X_agg)
-X_train,X_test,y_train,y_test = train_test_split(X_sc,y_agg,test_size=.2,random_state=rng)
-classifier = OneVsRestClassifier(svm.SVC(kernel='rbf',C=1., random_state=rng))
+X_sc = scaler.fit_transform(X)
+X_train, X_test, y_train, y_test = \
+    train_test_split(X_sc,y,test_size=.2,random_state=290615)
+clf = OneVsRestClassifier(svm.SVC(kernel='rbf',C=1., random_state=290615))
 t_svm = time()
-classifier.fit(X_train, y_train)
+clf.fit(X_train, y_train)
 print('Training SVM took %.0fs' % (time()-t_svm)) # ~70s
 
-y_pred = classifier.predict(X_test)
+y_pred = clf.predict(X_test)
 F1 = f1_score(y_test, y_pred, average='micro')
 print('F1 score: %.3f' % F1) # 0.775
 
-# TODO use cross validation to select the optimal C parameter
 
 # train on full data set
 rng = np.random.RandomState(290615)
-classifier = OneVsRestClassifier(svm.SVC(kernel='rbf',C=1., random_state=rng))
-classifier.fit(X_sc, y_agg)
+clf = OneVsRestClassifier(svm.SVC(kernel='rbf',C=1., random_state=rng))
+clf.fit(X_sc, y_agg)
 
-
-### ========== Predict for Submission ========== ###
-
-# read in sampled test data
-t_submit = time()
-submit_photo_biz = pd.read_csv('data/test_photo_to_biz.csv')
-submit_biz_lab = pd.read_csv('data/sample_submission.csv')
-submit_h5 = h5py.File('data/submit.h5','w')
-
-# read in sampled images for each biz_id, normalize
-for i in submit_biz_lab.index:
-    biz_i = submit_biz_lab.ix[i,'business_id']
-    photo_s = submit_photo_biz.ix[submit_photo_biz['business_id']==biz_i,'photo_id']
-    if len(photo_s) > batch_size:
-        photo_s = photo_s.sample(n=batch_size,replace=False,random_state=290615)
-    imgs = submit_h5.create_dataset(
-        name=str(biz_i),
-        shape=(len(photo_s),ch,h,w),
-        dtype=np.float32)
-    for j in range(len(photo_s)):
-        f_ = 'data/test_photos/%s.jpg' % (photo_s.iloc[j])
-        im_sml = Image.open(f_).resize((w,h))
-        # should use the specific means as used to normalize the data
-        imgs[j,:,:,:] = np.asarray(im_sml).transpose((2,0,1))/128.-1
-    if i % 100 == 0:
-        print('completed %d took %.1fs' % (i,time()-t_submit))
-submit_h5.close()
 
 # predict using mean biz feature
 t_pred = time()
@@ -192,7 +172,7 @@ for i in range(len(biz_l)):
     biz_i = biz_l[i]
     feat_i = np.mean(model.predict(submit_h5[biz_i]),axis=0).reshape(1,-1)
     # feat_sc = scaler.transform(feat_i)
-    lab_i = np.where(classifier.predict(feat_i)[0])[0]
+    lab_i = np.where(clf.predict(feat_i)[0])[0]
     submit_biz_lab.ix[submit_biz_lab['business_id']==biz_i,'labels'] = \
         ' '.join(str(l) for l in lab_i)
     if i % 10 == 0:
