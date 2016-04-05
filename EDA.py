@@ -37,8 +37,11 @@ plt.colorbar()
 np.random.seed(290615)
 submit['labels'] = submit.apply(lambda x: ' '.join( \
 [str(i) for i in np.where(np.random.binomial(1,py,size=(9)))[0]]),axis=1)
-submit.to_csv('data/sub1_naive.csv',index=False)
+submit.to_csv('data/sub1_naive.csv',index=False) # 0.48
 
+# predict classes that are > 0.5, 2,3,5,6,8
+submit['labels'] = '2 3 5 6 8'
+submit.to_csv('data/sub2_naive.csv',index=False) # 0.61
 
 
 ################## Explore pictures by category #######################

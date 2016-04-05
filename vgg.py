@@ -18,6 +18,10 @@ from keras.callbacks import Callback
 def to_bool(s):
     return(pd.Series([1L if str(i) in str(s).split(' ') else 0L for i in range(9)]))
 
+# take average prediction of binary matrix and convert into a string of numeric labels
+def from_bool(Y):
+    y = np.where(Y.mean(axis=0).round())[0]
+    return(' '.join(str(i) for i in y))
 
 # returns matrix of pixel data given photo list
 def generate_images(photo_list, rng=None, f_path='data/train_photos/'):
@@ -67,10 +71,10 @@ def batch_generator(df_,batch_size,gentype='train'):
     b_order = rng.permutation(b_list)
     while True:
         biz_id = b_order[bi]
-        print('start bi %i biz_id %i' % (bi,biz_id))
         photos = df_.ix[df_['business_id']==biz_id,'photo_id']
         if len(photos) > batch_size:
             photos = photos.ix[rng.choice(photos.index,batch_size,replace=False)]
+        # print('start bi %i biz_id %i n_photos' % (bi,biz_id,len(photos)))
         if gentype == 'train':
             X_batch = generate_images(photos,rng=rng,f_path='data/train_photos/')
         elif gentype == 'valid':
@@ -94,9 +98,9 @@ def batch_generator(df_,batch_size,gentype='train'):
 
 
 # max of output probabilities
-def obj_mean(Y_true,Y_pred):
+def obj_max(Y_true,Y_pred):
     y_true = K.mean(Y_true,axis=0)
-    y_pred = K.mean(Y_pred,axis=0)
+    y_pred = K.max(Y_pred,axis=0)
     return(K.mean(K.binary_crossentropy(y_pred,y_true)))
 
 
@@ -156,7 +160,7 @@ def VGG_16(weights_path=None):
     for i in range(depth-1):
        vgg_9.add(vgg.layers[i])
     vgg_9.add(Dense(9, activation='sigmoid'))
-    vgg_9.compile(optimizer='rmsprop',loss=obj_mean,class_mode='binary') 
+    vgg_9.compile(optimizer='rmsprop',loss=obj_max,class_mode='binary') 
 
     return(vgg_9)
 
@@ -201,7 +205,7 @@ class Validator(Callback):
         self.t_start = time()
     def on_batch_end(self, epoch, logs={}):
         t_batch = time()-self.t_start
-        self.t_batch[epoch % self.print_every_n] = t_batch
+        self.t_batch[epoch % len(self.t_batch)] = t_batch
         if epoch % self.print_every_n == 0 and epoch > 0:
             print('batch: %i acc: %.3f loss: %.3f size: %i took %.2fs' % \
         (logs['batch'],logs['acc'],logs['loss'],logs['size'],self.t_batch.mean()))
@@ -219,7 +223,7 @@ if __name__ == '__main__':
     biz_lab = pd.read_csv('data/train.csv')
     photo_biz = pd.read_csv('data/train_photo_to_biz_ids.csv')
     biz_lab[['0','1','2','3','4','5','6','7','8']] = biz_lab['labels'].apply(to_bool)
-    h,w,ch,batch_size = 224,224,3,256
+    h,w,ch,batch_size = 224,224,3,64
 
     # build model
     model = VGG_16('models/vgg16_weights.h5')
@@ -238,18 +242,38 @@ if __name__ == '__main__':
     train_gen = batch_generator(df_train,batch_size,gentype='train')
     valid_gen = batch_generator(df_valid,batch_size,gentype='valid')
     test_gen = batch_generator(df_test,batch_size,gentype='test')
+    samples_per_epoch = df_train.groupby('business_id').apply(\
+        lambda x: len(x) if len(x) < batch_size else batch_size).sum()
 
     validator = Validator(model,valid_gen,len(i_valid))
     model.fit_generator(
         train_gen,
-        samples_per_epoch=len(df_train),
+        samples_per_epoch=samples_per_epoch,
         nb_epoch=50,
         show_accuracy=True,
         verbose=2,
         callbacks=[validator])
     ce,prec,recall,F1,acc,tp,tn,fp,fn,y = test(model_separate,test_gen,len(i_test))
 
+    # save model
     mname = 'vgg_mean_%03d' % (F1*100)
     model_json = model_separate.to_json()
     open('models/%s.json' % (mname), 'w').write(model_json)
-    model_separate.save_weights('models/%s_weights.h5' % (mname))
+    model.save_weights('models/%s_weights.h5' % (mname))
+
+    # predict on submission data
+    biz_lab_s = pd.read_csv('data/sample_submission.csv')
+    photo_biz_s = pd.read_csv('data/test_photo_to_biz.csv')
+    rng = np.random.RandomState(290615)
+    t_submit = time()
+    for i in range(len(biz_lab_s)):
+        biz = biz_lab_s['business_id'][i]
+        photos = photo_biz_s.ix[photo_biz_s['business_id']==biz,'photo_id']
+        if len(photos) > batch_size:
+            photos = photos.ix[rng.choice(photos.index,batch_size,replace=False)]
+        X_batch = generate_images(photos, f_path='data/test_photos/')
+        Y_batch = model.predict(X_batch, batch_size=batch_size)
+        biz_lab_s['labels'][i] = from_bool(Y_batch)
+        if i % 100 == 0 or i < 5:
+            biz_lab_s.to_csv('data/sub6_vgg.csv',index=False)
+            print('Predicted %dth biz %ds' % (i,time()-t_submit))
